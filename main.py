@@ -29,7 +29,7 @@ import multiprocessing
 #  Main execution functions
 # ===================================
 
-def video_to_csv(cap, fileName, span,center, dbPerHLine):
+def video_to_csv(cap, fileName, span,center, dbPerHLine, proc_frmrt):
     
     """Main execution function for analyzing the video."""
     # Open the video file for processing
@@ -50,8 +50,11 @@ def video_to_csv(cap, fileName, span,center, dbPerHLine):
     # Get video properties like width, height, and FPS
     frame_width, frame_height = int(cap.get(3)), int(cap.get(4))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
+    frame_to_process = round(fps/proc_frmrt)
+
     print(f"Playing video with dimensions: {frame_width}x{frame_height} and {fps} FPS.")
     rect_cnt = 0
+    frame_count = 0
     gridheight = 0
     gridwidth = 0
     center_x = 0 # x value of the center line of the grid which correlates with CENTER value from spectrom analyzer
@@ -77,50 +80,53 @@ def video_to_csv(cap, fileName, span,center, dbPerHLine):
             # mask will be None if no wave is detected
             # leftmost_x is used to check position in the video where the wave data begins
             # leftmost_y is to check the y position of the wave data to determine when wave data is being cleared and should be ignored
+            
             mask, (wave_y, wave_x), leftmost_x, leftmost_y, center_x, mask_width = utilities.Utilities.find_wave(frame)
+            frame_count+=1
+            if(frame_count == frame_to_process):
+                while(rect_cnt <= 10):
+                    contours, (grid_y, grid_x) = utilities.Utilities.findGrid(frame)
+                    for contour in contours:
+                        perimeter = cv2.arcLength(contour, True)
+                        approx = cv2.approxPolyDP(contour, 0.02*perimeter, True)
+                        if len(approx)==4:
+                            x, y, w, h = cv2.boundingRect(approx)
+                            if(h > 50 & h < 100):
+                                if(rect_cnt <= 10):
+                                    gridwidth +=w
+                                    gridheight+=h
+                                    rect_cnt +=1
+                    initial_y = leftmost_y # initialize the y value of the wave based on the start of the video
+                    initial_x = leftmost_x # initialize the x value of the wave based on the start of the video 
+                print(f"initial x: {initial_x}")
+                # center_x = initial_x + (gridwidth/2) #establish center x position of the center of the spectrom analyzer      
+                gridheight = grid_y[len(grid_y)-1]-grid_y[0]-252 # 252px is the distance between the actual grid and the top and bottom of the 
+                print(f"gridwidth: {gridwidth}")
+                gridwidth = mask_width # Since the width of the wave mask is the same as the width of the grid, we can use this as the basis for the grid width to determine the pixel to HZ ratio
 
-            while(rect_cnt <= 10):
-                contours, (grid_y, grid_x) = utilities.Utilities.findGrid(frame)
-                for contour in contours:
-                    perimeter = cv2.arcLength(contour, True)
-                    approx = cv2.approxPolyDP(contour, 0.02*perimeter, True)
-                    if len(approx)==4:
-                        x, y, w, h = cv2.boundingRect(approx)
-                        if(h > 50 & h < 100):
-                            if(rect_cnt <= 10):
-                                gridwidth +=w
-                                gridheight+=h
-                                rect_cnt +=1
-                initial_y = leftmost_y # initialize the y value of the wave based on the start of the video
-                initial_x = leftmost_x # initialize the x value of the wave based on the start of the video 
-            print(f"initial x: {initial_x}")
-            # center_x = initial_x + (gridwidth/2) #establish center x position of the center of the spectrom analyzer      
-            gridheight = grid_y[len(grid_y)-1]-grid_y[0]-252 # 252px is the distance between the actual grid and the top and bottom of the 
-            print(f"gridwidth: {gridwidth}")
-            gridwidth = mask_width # Since the width of the wave mask is the same as the width of the grid, we can use this as the basis for the grid width to determine the pixel to HZ ratio
+                # Get detailed information from the processed wave
 
-            # Get detailed information from the processed wave
-
-            result = utilities.Utilities.process_wave(frame, mask, span, center, dbPerHLine, gridheight, wave_x, wave_y, initial_x, leftmost_y, initial_y, gridwidth, center_x)
-            
-            if result:
-                center_freq, amplitude = result
-                if(amplitude > max_amplitude):
-                    max_amplitude = amplitude
-                if(amplitude < min_amplitude):
-                    min_amplitude = amplitude
+                result = utilities.Utilities.process_wave(frame, mask, span, center, dbPerHLine, gridheight, wave_x, wave_y, initial_x, leftmost_y, initial_y, gridwidth, center_x)
                 
-            # If a valid result is obtained, print and store it
-            if result:
-                center_amplitude = (min_amplitude+max_amplitude)/2
-                data = center_freq, min_amplitude, max_amplitude, center_amplitude
-                utilities.Utilities.print_wave_characteristics(min_amplitude, max_amplitude, center_freq, cap.get(cv2.CAP_PROP_POS_FRAMES), fps, gridheight)
-                detected_signals.append(data)
-            
+                if result:
+                    center_freq, amplitude = result
+                    if(amplitude > max_amplitude):
+                        max_amplitude = amplitude
+                    if(amplitude < min_amplitude):
+                        min_amplitude = amplitude
+                    
+                # If a valid result is obtained, print and store it
+                if result:
+                    center_amplitude = (min_amplitude+max_amplitude)/2
+                    data = center_freq, min_amplitude, max_amplitude, center_amplitude
+                    utilities.Utilities.print_wave_characteristics(min_amplitude, max_amplitude, center_freq, cap.get(cv2.CAP_PROP_POS_FRAMES), fps, gridheight)
+                    detected_signals.append(data)
+                frame_count =0
+
             if mask is not None:
                 # Show the cropped frame with the wave to the user
                 cv2.imshow('Video', mask)
-                
+                    
             else:
             # If screen is not detected, simply show the entire frame
                 cv2.imshow('Video', frame)
@@ -162,17 +168,17 @@ def video_to_csv(cap, fileName, span,center, dbPerHLine):
     cv2.destroyAllWindows()
     print("Video playback is done.")
 
-def video_to_csv_worker(video_file, span, center, dbPerHLine):
+def video_to_csv_worker(video_file, span, center, dbPerHLine, proc_frmrt):
     cap = cv2.VideoCapture(video_file)
     fileName = os.path.basename(video_file)
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     fileName = current_time + "_CSV_" + fileName
-    video_to_csv(cap, fileName, span, center, dbPerHLine)
+    video_to_csv(cap, fileName, span, center, dbPerHLine, proc_frmrt)
 
-def process_video_file_worker(video_file, span, center, dbPerHLine):
+def process_video_file_worker(video_file, span, center, dbPerHLine, proc_frmrt):
     full_video_path = os.path.join(env_vars.Env_Vars.VIDEO_FOLDER, video_file)
     print("Processing video: " + full_video_path)
-    video_to_csv_worker(full_video_path, span, center, dbPerHLine)
+    video_to_csv_worker(full_video_path, span, center, dbPerHLine, proc_frmrt)
 
 def main():
     # Specify the folder containing the videos
@@ -199,10 +205,13 @@ def main():
     span = float(input('Enter SPAN value (HZ): '))
     center = float(input('Enter CENTER value (GHZ): '))
     dbPerHLine = int(input('Enter dB/horizontal line value: '))
+    proc_frmrt = int(input('Enter processed frames per second (1-30): '))
+    while(proc_frmrt > 30 or proc_frmrt < 1):
+            proc_frmrt = int(input('Please enter a value between 1 and 30: '))
 
     # Use multiprocessing.Pool to process videos in parallel
     with multiprocessing.Pool(processes=num_processes) as pool:
-        pool.starmap(process_video_file_worker, [(video, span, center, dbPerHLine) for video in video_files])
+        pool.starmap(process_video_file_worker, [(video, span, center, dbPerHLine, proc_frmrt) for video in video_files])
 # ===================================
 # 5. Script entry point
 # ===================================
